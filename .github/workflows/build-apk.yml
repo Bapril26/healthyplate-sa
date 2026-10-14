@@ -39,6 +39,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: HealthyPlate SA test build ${{ github.run_number }}
+          name: HealthyPlate SA v1.1 test build ${{ github.run_number }}
           body: Install HealthyPlateSA.apk on your Android phone. You may need to allow "Install unknown apps" for your browser.
           files: HealthyPlateSA.apk

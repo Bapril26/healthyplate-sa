@@ -25,14 +25,17 @@ All data is stored on the phone.
 
 Alternative: open the folder in **Android Studio** and choose Build → Build APK(s).
 
-## Turning on the photo scanner
-The scanner sends the photo to Claude (Anthropic's AI) for a calorie estimate.
-1. Create an API key at console.anthropic.com (each scan costs a fraction of a rand).
-2. In the app, go to **Profile → Photo scanner** and paste the key.
+## Photo scanner
+**Camera:** tap **Scan → Open camera** for a live preview, then press the round button to take the photo. Android asks for camera permission the first time. If it was refused, the app explains how to allow it and offers **Open phone settings**. **Upload from gallery** always works too.
 
-Without a key, tap **try a demo result** on the Scan screen to see how it works.
+**AI food recognition:** photos are analysed by Claude (Anthropic).
+1. Create an API key at console.anthropic.com and add some credit (each scan costs a fraction of a rand).
+2. In the app, go to **Profile → Photo scanner**, paste the key, and tap **Test connection**. You should see ✅ Connected.
 
-**Before a public launch:** move the key onto a Fusion Labs server so it isn't stored in the app, and connect real Google Play billing for Premium.
+**Before a public launch,** deploy `server/scan-worker.js` (a free Cloudflare Worker, with steps in the file) so the key lives on a server, not in the app. Then paste the worker URL into **Fusion Labs scan server**.
+
+## Updating the app
+Test builds are signed with a fixed test key (`app/healthyplate-test.jks`), so each new APK installs over the previous one and keeps your data. For Google Play, create a separate private upload key and don't commit it.
 
 ## Notes
 - Calorie and nutrition figures are estimates, not medical advice.

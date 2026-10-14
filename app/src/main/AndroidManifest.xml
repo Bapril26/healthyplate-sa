@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Camera is optional: phones without one can still upload from the gallery -->
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <queries>
         <intent>

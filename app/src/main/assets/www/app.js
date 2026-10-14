@@ -417,22 +417,101 @@
         : '<div class="empty-state"><div class="big">🍽️</div><p>Nothing logged yet today.</p></div>') + '</div>';
   };
 
-  // Photo scanner
-  let scan = { img: null, loading: false, result: null, error: null, mult: 1, demo: false };
+  // ───────── Photo scanner ─────────
+  // Camera: live in-app preview (getUserMedia). The Android app grants camera access natively
+  // (window.HPNative); gallery upload is always available as a fallback.
+  // AI: Claude vision, called directly with the owner's key, or through a Fusion Labs scan server.
+  const NATIVE = window.HPNative || null;
+  const CAN_LIVE_CAMERA = !window.HP_EMBED;
+  let scan = { img: null, loading: false, result: null, error: null, configError: false, mult: 1, demo: false };
+  let cam = { state: 'idle', stream: null, msg: '', facing: 'environment', blocked: false }; // idle|starting|live|denied|none|unsupported|error
   function scansLeft() { if (S.premium) return Infinity; if (S.scans.date !== todayKey()) return FREE_SCANS_PER_DAY; return Math.max(0, FREE_SCANS_PER_DAY - S.scans.count); }
+  const scannerReady = () => !!(S.scanUrl || S.apiKey);
+  function stopCamera() {
+    if (cam.stream) { try { cam.stream.getTracks().forEach(t => t.stop()); } catch (e) { /* already stopped */ } }
+    cam.stream = null;
+    if (cam.state === 'live' || cam.state === 'starting') cam.state = 'idle';
+  }
+  function camErrorState(err) {
+    const n = err && err.name;
+    if (n === 'NotAllowedError' || n === 'SecurityError' || n === 'PermissionDeniedError') return ['denied', 'Camera access is turned off for HealthyPlate.'];
+    if (n === 'NotFoundError' || n === 'DevicesNotFoundError' || n === 'OverconstrainedError') return ['none', 'No camera was found on this phone. You can upload a photo from your gallery instead.'];
+    if (n === 'NotReadableError' || n === 'TrackStartError' || n === 'AbortError') return ['error', 'The camera is busy or couldn’t start. Close any other app using the camera and try again.'];
+    return ['error', 'The camera couldn’t start' + (err && err.message ? ' (' + err.message + ')' : '') + '. You can upload a photo from your gallery instead.'];
+  }
+  async function startCamera() {
+    if (scansLeft() <= 0) { go('/premium'); toast('You’ve used today’s free scans'); return; }
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+      cam.state = 'unsupported'; cam.msg = 'The live camera isn’t supported on this phone. Use “Take photo” or “Upload from gallery”.'; render(); return;
+    }
+    if (NATIVE && NATIVE.cameraStatus && NATIVE.cameraStatus() === 'none') {
+      cam.state = 'none'; cam.msg = 'No camera was found on this phone. You can upload a photo from your gallery instead.'; render(); return;
+    }
+    cam.state = 'starting'; cam.msg = ''; render();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: cam.facing }, width: { ideal: 1280 }, height: { ideal: 1280 } } });
+      if (!curRoute().startsWith('/scan')) { stream.getTracks().forEach(t => t.stop()); cam.state = 'idle'; return; }
+      cam.stream = stream; cam.state = 'live'; render();
+    } catch (err) {
+      const r = camErrorState(err); cam.state = r[0]; cam.msg = r[1]; cam.stream = null; render();
+    }
+  }
+  // Called by the Android app after the permission dialog: 'granted' | 'denied' | 'blocked'
+  window.HPCameraPermission = status => {
+    cam.blocked = status === 'blocked';
+    if (status === 'granted' && cam.state === 'denied') { cam.msg = ''; startCamera(); }
+    else if (curRoute().startsWith('/scan')) render();
+  };
+  function captureFrame() {
+    const v = $('#camvideo');
+    if (!v || !v.videoWidth) { toast('The camera is still starting…'); return; }
+    const k = Math.min(1, 1024 / Math.max(v.videoWidth, v.videoHeight));
+    const c = document.createElement('canvas'); c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
+    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+    const img = c.toDataURL('image/jpeg', 0.85);
+    stopCamera(); cam.state = 'idle';
+    scan = { img, loading: false, result: null, error: null, configError: false, mult: 1, demo: false };
+    render(); runScan();
+  }
+  function scannerSetupCard() {
+    if (window.HP_EMBED) return '<div class="alert info mt">In this browser preview, photo scanning runs in demo mode. Real scans work in the Android app. <button class="linkbtn" data-act="demoScan">Try a demo result</button></div>';
+    if (scannerReady()) {
+      const t = S.scanTest || {};
+      return '<p class="small center mt ' + (t.ok === false ? '' : 'muted') + '">' + (t.ok === true ? '✅ AI scanner connected' : t.ok === false ? '⚠️ ' + esc(t.msg) : 'AI scanner set up') + ' · <button class="linkbtn small" data-act="testScanner">Test connection</button></p>';
+    }
+    return '<div class="card mt" id="scanner-setup"><h3>🔌 Connect the AI scanner</h3>' +
+      '<p class="small muted">To recognise food, your photo is sent to an AI vision service (Claude by Anthropic). Paste your API key from <b>console.anthropic.com</b> to switch it on. It’s stored only on this phone.</p>' +
+      '<label class="f" for="scan-key">Scanner key</label><input class="in" id="scan-key" type="password" data-setting="apiKey" value="' + esc(S.apiKey) + '" placeholder="sk-ant-…" autocomplete="off">' +
+      '<div class="row wrapr mt"><button class="btn sm" data-act="testScanner">Save & test</button><button class="linkbtn" data-act="demoScan">Try a demo result</button></div></div>';
+  }
   views.scan = () => {
-    const left = scansLeft();
-    let body = '';
-    if (!scan.img) {
-      body = '<label class="scan-drop" style="display:block"><div class="big">📷</div><h2>Snap your plate</h2><p class="muted">Take a clear photo from above, with the whole plate in view, in good light.</p><span class="btn">Take or choose a photo</span>' +
-        '<input id="photo" type="file" accept="image/*" capture="environment" hidden></label>' +
-        '<p class="small muted center mt">' + (left === Infinity ? '★ Premium: unlimited scans' : left + ' of ' + FREE_SCANS_PER_DAY + ' free scans left today') + '</p>' +
-        (window.HP_EMBED ? '<div class="alert info">In this browser preview, photo scanning runs in demo mode. Real scans work in the Android app. <button class="linkbtn" data-act="demoScan">Try a demo result</button></div>' : !S.apiKey ? '<div class="alert info">The AI scanner isn’t connected yet. Add your scanner key under <a href="#/profile">Profile → Photo scanner</a>, or <button class="linkbtn" data-act="demoScan">try a demo result</button>.</div>' : '');
-    } else {
+    const left = scansLeft(); let body = '';
+    if (scan.img) {
       body = '<img class="scan-img" src="' + scan.img + '" alt="Your meal photo">';
       if (scan.loading) body += '<div class="card center"><div class="spinner"></div><p>Analysing your meal…</p></div>';
-      else if (scan.error) body += '<div class="alert warn mt"><b>Couldn’t analyse this photo.</b><br>' + esc(scan.error) + '</div><div class="actions"><button class="btn" data-act="rescan">Try again</button><button class="btn ghost" data-act="resetScan">New photo</button></div>';
+      else if (scan.error) body += '<div class="alert warn mt"><b>Couldn’t analyse this photo.</b><br>' + esc(scan.error) + '</div>' +
+        (scan.configError ? scannerSetupCard() : '') +
+        '<div class="actions"><button class="btn" data-act="rescan">Try again</button><button class="btn ghost" data-act="resetScan">New photo</button></div>';
       else if (scan.result) body += scanResultHtml();
+    } else if (cam.state === 'live' || cam.state === 'starting') {
+      body = '<div class="cam-wrap"><video id="camvideo" autoplay playsinline muted></video>' +
+        (cam.state === 'starting' ? '<div class="cam-overlay"><div class="spinner"></div><p>Starting camera…</p></div>' : '<div class="cam-guide" aria-hidden="true"></div>') + '</div>' +
+        '<div class="cam-controls"><button class="btn ghost sm" data-act="camCancel">Cancel</button>' +
+        '<button class="shutter" data-act="camCapture" aria-label="Take photo"' + (cam.state === 'live' ? '' : ' disabled') + '></button>' +
+        '<button class="btn ghost sm" data-act="camFlip" aria-label="Switch camera">🔄 Flip</button></div>' +
+        '<p class="small muted center">Hold the phone above the plate so the whole meal fits inside the frame.</p>';
+    } else {
+      const canLive = CAN_LIVE_CAMERA && cam.state !== 'none' && cam.state !== 'unsupported';
+      body = (cam.msg ? '<div class="alert warn"><b>Camera problem</b><br>' + esc(cam.msg) +
+          (cam.state === 'denied' ? (cam.blocked || !NATIVE ? '<br>Allow it under <b>Settings → Apps → HealthyPlate SA → Permissions → Camera</b>.' : '') +
+            '<div class="row wrapr mt">' + (cam.blocked ? '' : '<button class="btn sm" data-act="camStart">Allow camera</button>') +
+            (NATIVE ? '<button class="btn ghost sm" data-act="openSettings">Open phone settings</button>' : '') + '</div>' : '') + '</div>' : '') +
+        '<div class="scan-drop"><div class="big">📷</div><h2>Snap your plate</h2><p class="muted">Take a clear photo from above, with the whole plate in view, in good light.</p>' +
+        (canLive ? '<button class="btn block" data-act="camStart">📷 Open camera</button>' : '') +
+        (cam.state === 'unsupported' || !CAN_LIVE_CAMERA ? '<label class="btn block mt" for="photo-cam">📷 Take photo</label><input id="photo-cam" class="photo-input" type="file" accept="image/*" capture="environment" hidden>' : '') +
+        '<label class="btn ghost block mt" for="photo">🖼️ Upload from gallery</label><input id="photo" class="photo-input" type="file" accept="image/*" hidden></div>' +
+        '<p class="small muted center mt">' + (left === Infinity ? '★ Premium: unlimited scans' : left + ' of ' + FREE_SCANS_PER_DAY + ' free scans left today') + '</p>' +
+        scannerSetupCard();
     }
     return topbar('Calorie Scanner', true) + '<div class="wrap">' + body +
       '<p class="disclaimer">Photo calories are AI estimates and can’t be exact. Portion size, oil, sauces and hidden ingredients are hard to see in a photo. Use the portion slider to adjust. Not medical advice.</p></div>';
@@ -456,34 +535,88 @@
       '<div class="actions"><button class="btn" data-act="logScan">✅ Add to today</button><button class="btn ghost" data-act="resetScan">New photo</button></div>';
   }
   const SCAN_PROMPT = 'You are a nutrition estimation assistant inside a South African healthy-eating app. Look at this photo of food and estimate what is on the plate. Recognise South African foods (e.g. pap, boerewors, chakalaka, bunny chow, vetkoek, biltong, bobotie, samoosas, gatsby, koeksisters) as well as general foods. Estimate realistic portion weights and include likely hidden cooking oil and sauces. Respond with ONLY a JSON object, no other text, in exactly this shape: {"is_food": true, "meal_name": "short name", "items": [{"name": "food item", "portion": "e.g. 1 cup (180 g)", "grams": 180, "kcal": 230, "protein_g": 5, "carbs_g": 45, "fat_g": 2}], "total": {"kcal": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0}, "confidence": "low|medium|high", "possible_allergens": ["dairy","egg","gluten","peanuts","nuts","soy","fish","shellfish","sesame"], "notes": "one short sentence on what most affects accuracy"}. Only list allergens that are plausibly present. If the image does not contain food, return {"is_food": false, "items": []}.';
+  const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+  function scanError(status, body) {
+    const raw = body && body.error ? (typeof body.error === 'string' ? body.error : body.error.message || '') : '';
+    let msg;
+    if (status === 401) msg = 'The scanner key was rejected. Check that you pasted the whole key.';
+    else if (status === 403) msg = 'This key isn’t allowed to use the AI service. Check your Anthropic account.';
+    else if (status === 404) msg = 'The AI model “' + (S.model || DEFAULT_MODEL) + '” wasn’t found. Clear the AI model box in Profile → Photo scanner to use the default.';
+    else if (/credit|billing|balance/i.test(raw)) msg = 'Your Anthropic account has run out of credit. Add credit at console.anthropic.com.';
+    else if (status === 413) msg = 'The photo is too large. Try again with a smaller photo.';
+    else if (status === 429) msg = 'Too many scans in a short time. Wait a minute and try again.';
+    else if (status >= 500) msg = 'The AI service is busy right now. Try again in a moment.';
+    else msg = raw || 'The AI service returned an error (' + status + ').';
+    const e = new Error(msg); e.config = [401, 403, 404].includes(status) || /credit|billing|balance/i.test(raw); return e;
+  }
+  async function readJson(res) { try { return await res.json(); } catch (e) { return null; } }
+  function netError(e) { return e && e.name === 'TypeError' ? new Error('Couldn’t reach the AI service. Check that your phone is online and try again.') : e; }
+  function parseScanText(txt) {
+    const m = String(txt || '').match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('The AI reply couldn’t be read. Please try again.');
+    return JSON.parse(m[0]);
+  }
+  // Sends the photo (base64 JPEG) to the configured food-recognition service and returns the parsed result
+  async function analyseImage(b64) {
+    let res;
+    try {
+      if (S.scanUrl) {
+        res = await fetch(S.scanUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ image: b64, media_type: 'image/jpeg' }) });
+      } else {
+        res = await fetch(ANTHROPIC_URL, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-api-key': S.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+          body: JSON.stringify({ model: S.model || DEFAULT_MODEL, max_tokens: 1500, messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } }, { type: 'text', text: SCAN_PROMPT }] }] }),
+        });
+      }
+    } catch (e) { throw netError(e); }
+    const j = await readJson(res);
+    if (!res.ok) throw scanError(res.status, j);
+    if (!j) throw new Error('The AI reply couldn’t be read. Please try again.');
+    if (S.scanUrl) return j.result || j;
+    return parseScanText((j.content || []).filter(b => b.type === 'text').map(b => b.text).join(''));
+  }
+  async function testScanner() {
+    if (!scannerReady()) { toast('Paste your scanner key first'); return; }
+    toast('Testing the AI scanner…');
+    let result;
+    try {
+      let res;
+      try {
+        res = S.scanUrl
+          ? await fetch(S.scanUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ping: true }) })
+          : await fetch(ANTHROPIC_URL, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': S.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify({ model: S.model || DEFAULT_MODEL, max_tokens: 5, messages: [{ role: 'user', content: 'Reply with OK' }] }) });
+      } catch (e) { throw netError(e); }
+      if (!res.ok) throw scanError(res.status, await readJson(res));
+      result = { ok: true, at: Date.now() };
+      toast('✅ AI scanner connected');
+    } catch (e) {
+      result = { ok: false, msg: e.message, at: Date.now() };
+      toast('⚠️ ' + e.message);
+    }
+    S.scanTest = result; save(); render();
+  }
   async function runScan() {
     if (!scan.img) return;
     if (scansLeft() <= 0) { go('/premium'); toast('You’ve used today’s free scans'); return; }
-    if (!S.apiKey) { scan.error = 'The scanner isn’t connected. Add a scanner key in Profile → Photo scanner.'; render(); return; }
-    scan.loading = true; scan.error = null; scan.result = null; scan.demo = false; render();
+    if (!scannerReady()) { scan.error = 'The AI scanner isn’t connected yet. Paste your scanner key below, then tap Try again.'; scan.configError = true; render(); return; }
+    scan.loading = true; scan.error = null; scan.configError = false; scan.result = null; scan.demo = false; render();
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-api-key': S.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-        body: JSON.stringify({ model: S.model || DEFAULT_MODEL, max_tokens: 1500, messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: scan.img.split(',')[1] } }, { type: 'text', text: SCAN_PROMPT }] }] }),
-      });
-      if (!res.ok) { let msg = 'Error ' + res.status; try { const j = await res.json(); msg = (j.error && j.error.message) || msg; } catch (e) { /* ignore */ } throw new Error(msg); }
-      const j = await res.json();
-      const txt = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
-      const m = txt.match(/\{[\s\S]*\}/); if (!m) throw new Error('The result could not be read. Please try again.');
-      scan.result = JSON.parse(m[0]); scan.mult = 1;
+      scan.result = await analyseImage(scan.img.split(',')[1]); scan.mult = 1;
       if (S.scans.date !== todayKey()) S.scans = { date: todayKey(), count: 0 };
-      S.scans.count++; save();
+      S.scans.count++; S.scanTest = { ok: true, at: Date.now() }; save();
     } catch (e) {
-      scan.error = (e && e.message) || 'Network problem. Check your internet connection.';
+      scan.error = (e && e.message) || 'Something went wrong. Please try again.';
+      scan.configError = !!(e && e.config);
     }
     scan.loading = false; if (curRoute().startsWith('/scan')) render();
   }
   function resizeImage(file) {
     return new Promise((resolve, reject) => {
+      if (file.type && !/^image\//.test(file.type)) { reject(new Error('That file isn’t a photo. Choose a JPG or PNG image.')); return; }
       const url = URL.createObjectURL(file); const img = new Image();
-      img.onload = () => { const s = Math.min(1, 1024 / Math.max(img.width, img.height)); const c = document.createElement('canvas'); c.width = Math.round(img.width * s); c.height = Math.round(img.height * s); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url); resolve(c.toDataURL('image/jpeg', 0.85)); };
-      img.onerror = () => reject(new Error('Could not open that image'));
+      img.onload = () => { const k = Math.min(1, 1024 / Math.max(img.width, img.height)); const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url); resolve(c.toDataURL('image/jpeg', 0.85)); };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('That photo couldn’t be opened. Try a different one.')); };
       img.src = url;
     });
   }
@@ -502,11 +635,15 @@
       row('Stores', esc((p.stores || []).map(s => (STORES.find(x => x.id === s) || {}).n).filter(Boolean).join(', ')), 5) + '</div>' +
       '<div class="card"><h3>Your daily estimate</h3><h2>≈ ' + t.kcal.toLocaleString('en-ZA') + ' kcal' + (t.protein ? ' · ' + t.protein + ' g protein' : '') + '</h2><p class="small muted">' + esc(t.explain) + '</p>' + (t.timeline ? '<p class="small muted">' + esc(t.timeline) + '</p>' : '') + '</div>' +
       '<a class="card" href="#/premium" style="display:block;text-decoration:none;color:inherit;background:linear-gradient(135deg,#15243F,#2A4A7A);color:#fff"><h3 style="color:#fff">' + (S.premium ? '★ Premium active' : '★ Go Premium') + '</h3><p style="margin:0;color:#DCE3EE">' + (S.premium ? 'Thanks for supporting HealthyPlate. Manage your subscription.' : 'Unlimited photo scans, auto meal plans and more.') + '</p></a>' +
-      '<div class="card"><h3>📷 Photo scanner</h3><p class="small muted">The calorie scanner uses an AI vision service. For testing, paste your Claude API key here. It is stored only on this phone. Before launch this should move to a secure Fusion Labs server.</p>' +
-      '<label class="f">Scanner key</label><input class="in" type="password" data-setting="apiKey" value="' + esc(S.apiKey) + '" placeholder="sk-ant-…" autocomplete="off">' +
-      '<label class="f">AI model</label><input class="in" data-setting="model" value="' + esc(S.model || DEFAULT_MODEL) + '"></div>' +
+      '<div class="card" id="photo-scanner"><h3>📷 Photo scanner</h3><p class="small muted">Food photos are analysed by an AI vision service (Claude by Anthropic). For testing, paste your API key from console.anthropic.com. It is stored only on this phone.</p>' +
+      '<p class="small"><b>Status:</b> ' + (!scannerReady() ? '⚪ Not connected' : (S.scanTest || {}).ok === true ? '✅ Connected' : (S.scanTest || {}).ok === false ? '⚠️ ' + esc(S.scanTest.msg) : '🟡 Not tested yet') + '</p>' +
+      '<label class="f" for="set-key">Scanner key</label><input class="in" id="set-key" type="password" data-setting="apiKey" value="' + esc(S.apiKey) + '" placeholder="sk-ant-…" autocomplete="off">' +
+      '<label class="f" for="set-model">AI model</label><input class="in" id="set-model" data-setting="model" value="' + esc(S.model || DEFAULT_MODEL) + '" placeholder="' + DEFAULT_MODEL + '">' +
+      '<label class="f" for="set-url">Fusion Labs scan server (optional)</label><input class="in" id="set-url" type="url" data-setting="scanUrl" value="' + esc(S.scanUrl || '') + '" placeholder="https://…workers.dev" autocomplete="off">' +
+      '<p class="small muted">Before a public launch, use a scan server so the key isn’t stored in the app. When a server is set, it’s used instead of the key.</p>' +
+      '<button class="btn soft block" data-act="testScanner">Test connection</button></div>' +
       '<div class="card"><h3>Data</h3><p class="small muted">Everything is stored privately on this phone.</p><button class="btn danger block" data-act="reset">Reset app & delete my data</button></div>' +
-      '<p class="disclaimer center">' + APP_NAME + ' v1.0 · by Fusion Labs<br>Nutrition values and calorie targets are estimates for general guidance and are not medical advice.</p></div>';
+      '<p class="disclaimer center">' + APP_NAME + ' v1.1 · by Fusion Labs<br>Nutrition values and calorie targets are estimates for general guidance and are not medical advice.</p></div>';
   };
 
   let premPlan = 'year';
@@ -560,12 +697,17 @@
     $('#tabbar').hidden = noTabs;
     document.querySelectorAll('#tabbar a').forEach(a => a.classList.toggle('on', a.dataset.tab === name));
     $('#app').innerHTML = fn(arg) + (noTabs ? '' : '<footer class="credit">Created by <b>Fusion Labs</b></footer>');
-    const photo = $('#photo'); if (photo) photo.addEventListener('change', onPhoto);
+    if (name !== 'scan' && cam.stream) stopCamera();
+    document.querySelectorAll('.photo-input').forEach(inp => inp.addEventListener('change', onPhoto));
+    const video = $('#camvideo');
+    if (video && cam.stream) { video.srcObject = cam.stream; const pr = video.play && video.play(); if (pr && pr.catch) pr.catch(() => {}); }
     if (render.lastPath !== path) { window.scrollTo(0, 0); render.lastPath = path; }
   }
   async function onPhoto(e) {
     const f = e.target.files && e.target.files[0]; if (!f) return;
-    try { scan = { img: await resizeImage(f), loading: false, result: null, error: null, mult: 1, demo: false }; render(); runScan(); }
+    e.target.value = '';
+    if (scansLeft() <= 0) { go('/premium'); toast('You’ve used today’s free scans'); return; }
+    try { scan = { img: await resizeImage(f), loading: false, result: null, error: null, configError: false, mult: 1, demo: false }; render(); runScan(); }
     catch (err) { toast(err.message); }
   }
 
@@ -652,12 +794,18 @@
     delDiary(el) { const k = todayKey(); S.diary[k] = (S.diary[k] || []).filter(e => e.id !== el.dataset.id); save(); render(); },
     manualLog() { sheet('<h2>Add food manually</h2><form data-form="manual"><label class="f">What did you eat?</label><input class="in" name="name" required placeholder="e.g. Apple"><label class="f">Calories (kcal)</label><input class="in" name="kcal" type="number" inputmode="numeric" required placeholder="e.g. 80"><div class="two"><div><label class="f">Protein (g)</label><input class="in" name="p" type="number" inputmode="decimal"></div><div><label class="f">Carbs (g)</label><input class="in" name="c" type="number" inputmode="decimal"></div></div><button class="btn block mt">Add to today</button></form><button class="btn ghost block mt" data-act="closeSheet">Cancel</button>'); },
     demoScan() {
-      scan = { img: 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 260"><rect width="400" height="260" fill="#F3EFE6"/><circle cx="200" cy="130" r="110" fill="#fff" stroke="#ddd" stroke-width="4"/><text x="200" y="160" font-size="90" text-anchor="middle">🍛</text></svg>'), loading: false, error: null, mult: 1, demo: true,
+      scan = { img: 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 260"><rect width="400" height="260" fill="#F3EFE6"/><circle cx="200" cy="130" r="110" fill="#fff" stroke="#ddd" stroke-width="4"/><text x="200" y="160" font-size="90" text-anchor="middle">🍛</text></svg>'), loading: false, error: null, configError: false, mult: 1, demo: true,
         result: { is_food: true, meal_name: 'Chicken curry with rice (demo)', items: [{ name: 'Chicken curry', portion: '1 cup (220 g)', grams: 220, kcal: 330, protein_g: 28, carbs_g: 12, fat_g: 19 }, { name: 'White rice', portion: '1 cup cooked (160 g)', grams: 160, kcal: 210, protein_g: 4, carbs_g: 46, fat_g: 0.5 }, { name: 'Sambals (tomato & onion)', portion: '2 tbsp (40 g)', grams: 40, kcal: 15, protein_g: 0.5, carbs_g: 3, fat_g: 0 }], total: { kcal: 555, protein_g: 32.5, carbs_g: 61, fat_g: 19.5 }, confidence: 'medium', possible_allergens: [], notes: 'Oil in the curry is the biggest unknown.' } };
       render();
     },
     rescan() { runScan(); },
-    resetScan() { scan = { img: null, loading: false, result: null, error: null, mult: 1, demo: false }; render(); },
+    resetScan() { scan = { img: null, loading: false, result: null, error: null, configError: false, mult: 1, demo: false }; cam.msg = ''; if (cam.state !== 'none' && cam.state !== 'unsupported') cam.state = 'idle'; render(); },
+    camStart() { startCamera(); },
+    camCapture() { captureFrame(); },
+    camCancel() { stopCamera(); cam.state = 'idle'; render(); },
+    camFlip() { cam.facing = cam.facing === 'environment' ? 'user' : 'environment'; stopCamera(); startCamera(); },
+    openSettings() { if (NATIVE && NATIVE.openAppSettings) NATIVE.openAppSettings(); },
+    testScanner() { testScanner(); },
     logScan() {
       const r = scan.result; const m = scan.mult; const t = r.total || {}; const k = todayKey();
       (S.diary[k] = S.diary[k] || []).push({ id: uid(), name: (r.meal_name || 'Scanned meal') + (m !== 1 ? ' (' + Math.round(m * 100) + '%)' : ''), kcal: (t.kcal || 0) * m, p: (t.protein_g || 0) * m, c: (t.carbs_g || 0) * m, f: (t.fat_g || 0) * m, src: 'scan', at: Date.now() });
@@ -681,7 +829,7 @@
   document.addEventListener('input', e => {
     const el = e.target;
     if (el.dataset.bind) { const d = D(); d[el.dataset.bind] = el.dataset.num ? (el.value === '' ? null : +el.value) : el.value; return; }
-    if (el.dataset.setting) { S[el.dataset.setting] = el.value.trim(); save(); return; }
+    if (el.dataset.setting) { S[el.dataset.setting] = el.value.trim(); if (el.dataset.setting === 'model' && !S.model) S.model = DEFAULT_MODEL; S.scanTest = null; save(); return; }
     if (el.dataset.note) { const n = S.notes.find(x => x.id === el.dataset.note); if (n) { n[el.dataset.field] = el.value; n.updated = Date.now(); clearTimeout(A._nt); A._nt = setTimeout(save, 300); } return; }
     if (el.id === 'sq') { $('#results').innerHTML = searchResults(el.value); replaceRoute('/search?q=' + encodeURIComponent(el.value)); return; }
     if (el.dataset.actInput === 'mult') { scan.mult = +el.value; const y = window.scrollY; render(); window.scrollTo(0, y); }

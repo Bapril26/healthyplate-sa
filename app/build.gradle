@@ -2,6 +2,12 @@ plugins {
     id 'com.android.application'
 }
 
+// Stable test signing key, so each new test APK installs as an update over the previous one.
+// Before publishing on Google Play, create a private upload key and keep it OUT of this repository.
+def signingProps = new Properties()
+def signingFile = file('test-signing.properties')
+if (signingFile.exists()) signingFile.withInputStream { signingProps.load(it) }
+
 android {
     namespace 'za.co.fusionlabs.healthyplate'
     compileSdk 34
@@ -10,16 +16,23 @@ android {
         applicationId 'za.co.fusionlabs.healthyplate'
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName '1.0'
+        versionCode 2
+        versionName '1.1'
+    }
+
+    signingConfigs {
+        test {
+            storeFile file(signingProps.getProperty('storeFile', 'healthyplate-test.jks'))
+            storePassword signingProps.getProperty('storePassword', '')
+            keyAlias signingProps.getProperty('keyAlias', 'healthyplate')
+            keyPassword signingProps.getProperty('keyPassword', '')
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
-            // Test builds are signed with the debug key so they install directly.
-            // Replace with your own upload key before publishing on Google Play.
-            signingConfig signingConfigs.debug
+            signingConfig signingFile.exists() ? signingConfigs.test : signingConfigs.debug
         }
     }
 
