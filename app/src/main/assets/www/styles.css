@@ -235,3 +235,9 @@ input[type=range] { width: 100%; accent-color: var(--green); height: 32px; }
 .empty-state .big { font-size: 54px; }
 .disclaimer { font-size: 13px; color: var(--muted); margin-top: 14px; }
 .hidden { display: none !important; }
+
+/* Fusion Labs credit */
+.credit { text-align: center; font-size: 13px; color: var(--muted); padding: 8px 16px 18px; letter-spacing: .02em; }
+.credit b { color: var(--navy); font-weight: 700; }
+.welcome .credit-dark { margin: 22px auto 0; font-size: 13px; color: #9FB0C8; }
+.welcome .credit-dark b { color: var(--lime); }

@@ -215,7 +215,7 @@
     '<div><span>🛒</span>Shopping lists with rand prices and store links: Checkers, Pick n Pay, Shoprite & more</div>' +
     '<div><span>🎯</span>Built around your goal: lose weight, build muscle, or simply eat better</div></div>' +
     '<p class="small">Let’s set up your plan. It takes less than a minute.</p>' +
-    '<button class="btn block" data-act="startSetup">Get Started</button></section>';
+    '<button class="btn block" data-act="startSetup">Get Started</button><p class="credit-dark">Created by <b>Fusion Labs</b></p></section>';
 
   function setupShell(step, inner, opts) {
     const total = 6; const edit = isEdit();
@@ -559,7 +559,7 @@
     document.body.classList.toggle('no-tabs', noTabs);
     $('#tabbar').hidden = noTabs;
     document.querySelectorAll('#tabbar a').forEach(a => a.classList.toggle('on', a.dataset.tab === name));
-    $('#app').innerHTML = fn(arg);
+    $('#app').innerHTML = fn(arg) + (noTabs ? '' : '<footer class="credit">Created by <b>Fusion Labs</b></footer>');
     const photo = $('#photo'); if (photo) photo.addEventListener('change', onPhoto);
     if (render.lastPath !== path) { window.scrollTo(0, 0); render.lastPath = path; }
   }
