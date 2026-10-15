@@ -5,9 +5,16 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.graphics.Color;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.provider.Settings;
+import android.view.View;
+import android.view.WindowInsets;
+import android.widget.FrameLayout;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
@@ -20,6 +27,8 @@ import android.webkit.WebViewClient;
 
 import androidx.core.content.FileProvider;
 import androidx.webkit.WebViewAssetLoader;
+
+import org.json.JSONObject;
 
 import java.io.File;
 import java.io.IOException;
@@ -39,12 +48,39 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> pendingFileCallback;
     private PermissionRequest pendingWebPermission;
     private Uri cameraUri;
+    private BillingManager billing;
+    private OnBackInvokedCallback backCallback;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         webView = new WebView(this);
-        setContentView(webView);
+
+        // Android 15+ draws apps edge-to-edge: pad the content so it stays clear of the
+        // status bar, navigation bar and keyboard.
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.parseColor("#FAF8F3"));
+        root.addView(webView, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            root.setOnApplyWindowInsetsListener((View v, WindowInsets insets) -> {
+                android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime() | WindowInsets.Type.displayCutout());
+                v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+                return WindowInsets.CONSUMED;
+            });
+        }
+        setContentView(root);
+
+        // Android 13+ back gesture (required for apps targeting Android 16)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            backCallback = () -> {
+                if (webView != null && webView.canGoBack()) webView.goBack();
+                else finish();
+            };
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, backCallback);
+        }
+
+        // Google Play subscriptions (HealthyPlate Pro)
+        billing = new BillingManager(this, this::sendBillingEvent);
 
         final WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
                 .setDomain(APP_HOST)
@@ -218,8 +254,17 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void sendBillingEvent(JSONObject event) {
+        final String js = "window.HPBilling && window.HPBilling(" + JSONObject.quote(event.toString()) + ")";
+        runOnUiThread(() -> { if (webView != null) webView.evaluateJavascript(js, null); });
+    }
+
     @Override
     protected void onDestroy() {
+        if (billing != null) billing.destroy();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && backCallback != null) {
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
+        }
         if (webView != null) webView.destroy();
         super.onDestroy();
     }
@@ -258,7 +303,30 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String appVersion() {
-            return "1.1";
+            return BuildConfig.VERSION_NAME;
+        }
+
+        /** True only in sideloaded test APKs: shows the "Turn on Pro for testing" switch */
+        @JavascriptInterface
+        public boolean isTestBuild() {
+            return BuildConfig.TEST_UNLOCK;
+        }
+
+        /** Loads Pro prices from Google Play and checks for an active subscription */
+        @JavascriptInterface
+        public void billingRefresh() {
+            runOnUiThread(() -> billing.refresh());
+        }
+
+        /** basePlanId: "monthly" or "yearly" */
+        @JavascriptInterface
+        public void billingBuy(final String basePlanId) {
+            runOnUiThread(() -> billing.buy(basePlanId));
+        }
+
+        @JavascriptInterface
+        public void billingRestore() {
+            runOnUiThread(() -> billing.checkPurchases());
         }
     }
 }

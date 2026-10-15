@@ -256,3 +256,28 @@ input[type=range] { width: 100%; accent-color: var(--green); height: 32px; }
 .shutter:active { transform: scale(.94); }
 .shutter:disabled { opacity: .45; }
 .scan-drop .btn { width: 100%; }
+
+/* HealthyPlate Pro */
+.rimg .lock { position: absolute; right: 10px; bottom: 10px; font-size: 13px; }
+.pro-banner { display: block; text-decoration: none; color: #fff; background: linear-gradient(135deg, var(--navy), #2A4A7A); }
+.pro-banner .small { color: #DCE3EE; }
+.pro-card { display: block; text-decoration: none; color: #fff; background: linear-gradient(135deg, var(--navy), #2A4A7A); }
+.pro-card h3 { color: #fff; }
+.pro-card p { margin: 0; color: #DCE3EE; }
+.pro-hero { background: linear-gradient(135deg, var(--navy), #2A4A7A); color: #fff; }
+.pro-hero h1 { color: #fff; }
+.pro-hero p { color: #DCE3EE; margin: 0; }
+.pro-hero .logo-sm { width: 64px; height: 64px; border-radius: 16px; }
+.compare { width: 100%; border-collapse: collapse; font-size: 15px; }
+.compare th { text-align: center; font-size: 13px; color: var(--muted); padding: 0 6px 8px; text-transform: uppercase; letter-spacing: .04em; }
+.compare th:last-child { color: var(--green); }
+.compare td { padding: 10px 6px; border-top: 1px solid var(--line); vertical-align: middle; }
+.compare td:nth-child(2), .compare td:nth-child(3) { text-align: center; white-space: nowrap; }
+.compare td:nth-child(3) { color: var(--green); }
+.test-card { border: 2px dashed #E8A33C; background: var(--amber-soft); box-shadow: none; margin-top: 14px; }
+.switch { flex: none; width: 58px; height: 34px; border-radius: 99px; border: 0; background: #C9CDD2; position: relative; transition: background .2s; }
+.switch span { position: absolute; top: 4px; left: 4px; width: 26px; height: 26px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .2s; }
+.switch.on { background: var(--green); }
+.switch.on span { transform: translateX(24px); }
+.linkbtn.block { display: block; width: 100%; }
+@media (prefers-reduced-motion: reduce) { .switch, .switch span { transition: none; } }

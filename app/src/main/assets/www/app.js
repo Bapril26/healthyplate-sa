@@ -5,7 +5,11 @@
   const APP_NAME = 'HealthyPlate SA';
   const STORE_KEY = 'healthyplate_state_v1';
   const DEFAULT_MODEL = 'claude-sonnet-5-5';
-  const FREE_SCANS_PER_DAY = 3;
+  const FREE_SCANS_PER_WEEK = 3;
+  // When the Fusion Labs scan server is live, put its URL here so customers never need a key.
+  const DEFAULT_SCAN_URL = '';
+  // Pro prices (set the same prices in Google Play Console; the app shows Google's live prices when available)
+  const PRO_PRICES = { monthly: 'R49.99', yearly: 'R399.99', yearlyPerMonth: 'R33.33', trialDays: 7 };
   const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
   const SLOTS = [['breakfast', 'Breakfast', '🌅'], ['lunch', 'Lunch', '☀️'], ['supper', 'Supper', '🌙']];
   const GOALS = {
@@ -34,7 +38,7 @@
 
   // ───────── State ─────────
   function defaults() {
-    return { profile: null, draft: null, saved: [], plan: {}, shopping: [], notes: [], diary: {}, premium: false, scans: { date: '', count: 0 }, apiKey: '', model: DEFAULT_MODEL };
+    return { profile: null, draft: null, saved: [], plan: {}, shopping: [], notes: [], diary: {}, pro: { active: false }, proTest: false, scans: { week: '', count: 0 }, apiKey: '', model: DEFAULT_MODEL };
   }
   let S;
   try { S = Object.assign(defaults(), JSON.parse(localStorage.getItem(STORE_KEY) || '{}')); } catch (e) { S = defaults(); }
@@ -139,7 +143,7 @@
     return s;
   }
   function slotRecipes(slot) {
-    return RECIPES.filter(r => r.cat === slot || (r.cat === 'prep' && (r.sub || []).includes(slot)));
+    return RECIPES.filter(r => r.cat === slot || (r.cat === 'prep' && isPro() && (r.sub || []).includes(slot)));
   }
   function pickFor(slot, seed, exclude) {
     const list = slotRecipes(slot).filter(recommendable).filter(r => !(exclude || []).includes(r.id));
@@ -181,10 +185,11 @@
   function rcard(r, opts) {
     opts = opts || {};
     const n = nut(r); const hits = allergyHits(r); const fav = S.saved.includes(r.id);
-    return '<a class="rcard" href="#/recipe/' + r.id + '">' +
+    const locked = proLocked(r);
+    return '<a class="rcard" href="' + (locked ? '#/premium' : '#/recipe/' + r.id) + '">' +
       '<div class="rimg ' + CATS[r.cat].g + '">' + r.e +
       (opts.slot ? '<span class="pill navy slot">' + esc(opts.slot) + '</span>' : '') +
-      (fav ? '<span class="fav">❤️</span>' : '') + '</div>' +
+      (fav ? '<span class="fav">❤️</span>' : '') + (locked ? '<span class="pill navy lock">🔒 Pro</span>' : '') + '</div>' +
       '<div class="rbody"><h3>' + esc(r.name) + '</h3>' +
       '<div class="meta"><span>🔥 <b>' + n.kcal + '</b> kcal</span><span>⏱ ' + r.time + ' min</span><span>💪 ' + n.p + ' g protein</span><span>≈ ' + money(n.cost) + '/serving</span></div>' +
       (hits.length ? '<div class="alert warn" style="margin:10px 0 0;padding:8px 12px">⚠️ Contains ' + esc(hits.join(', ')) + '</div>' : '') +
@@ -272,8 +277,9 @@
     const seed = todayKey(); const used = [];
     const ideas = SLOTS.map(([k, l]) => { const r = pickFor(k, seed + k, used); if (r) used.push(r.id); return r ? rcard(r, { slot: l }) : ''; }).join('');
     const tiles = [['#/cat/breakfast', 'Breakfast', '🍳', 'g-breakfast'], ['#/cat/lunch', 'Lunch', '🥗', 'g-lunch'], ['#/cat/supper', 'Supper', '🍲', 'g-supper'], ['#/cat/prep', 'Meal Prep', '🍱', 'g-prep'], ['#/plan', 'My Meal Plan', '📅', 'g-plan'], ['#/shop', 'Shopping List', '🛒', 'g-shop'], ['#/saved', 'Saved Recipes', '❤️', 'g-saved'], ['#/notes', 'My Notes', '📝', 'g-notes'], ['#/profile', 'Profile & Settings', '⚙️', 'g-profile']];
+    tiles.forEach(t => { if (t[1] === 'Meal Prep' && !isPro()) t[1] = 'Meal Prep 🔒'; });
     return '<div class="hello"><div class="row"><div class="spacer"><p class="muted" style="margin:0">' + greet + (p.name ? ',' : '') + '</p><h1>' + (p.name ? esc(p.name) : 'Welcome back') + ' 👋</h1></div><img class="logo-sm" src="icon.png" alt=""></div>' +
-      '<span class="pill">' + g.e + ' Goal: ' + g.n + '</span>' + (S.premium ? ' <span class="pill navy">★ Premium</span>' : '') + '</div>' +
+      '<span class="pill">' + g.e + ' Goal: ' + g.n + '</span>' + (isPro() ? ' <span class="pill navy">★ Pro</span>' : '') + '</div>' +
       '<div class="wrap">' +
       '<form class="search" data-form="search" role="search"><span>🔍</span><input name="q" placeholder="Search recipes, ingredients, cuisines…" enterkeyhint="search" aria-label="Search recipes"></form>' +
       '<a class="card today-card mt" href="#/today" style="text-decoration:none;color:inherit">' + ring(tot.kcal, t.kcal) + '<div><h3>Today</h3><p class="muted small" style="margin:0 0 4px">Protein ' + rnd(tot.p) + (t.protein ? ' / ' + t.protein : '') + ' g · Carbs ' + rnd(tot.c) + ' g · Fat ' + rnd(tot.f) + ' g</p><span class="linkbtn">View food diary →</span></div></a>' +
@@ -292,6 +298,7 @@
     const list = RECIPES.filter(r => r.cat === cat && filterOk(r, f)).sort((a, b) => (allergyHits(a).length - allergyHits(b).length) || (recommendable(b) - recommendable(a)) || (goalScore(b) - goalScore(a)));
     return topbar(c.n, true) + '<div class="wrap">' +
       '<div class="chips">' + subs.map(([k, l]) => '<button class="chip ' + (f === k ? 'on' : '') + '" data-act="catFilter" data-cat="' + cat + '" data-val="' + k + '">' + l + '</button>').join('') + '</div>' +
+      (cat === 'prep' && !isPro() ? '<a class="card pro-banner" href="#/premium"><b>🔒 Meal Prep is a Pro collection</b><br><span class="small">Cook once, eat all week. Unlock all meal-prep recipes with HealthyPlate Pro.</span></a>' : '') +
       '<p class="muted small">' + list.length + ' recipe' + (list.length === 1 ? '' : 's') + ' · sorted for your goal</p>' +
       (list.length ? '<div class="list2">' + list.map(r => rcard(r)).join('') + '</div>' : '<div class="empty-state"><div class="big">🍽️</div><p>No recipes in this filter yet.</p></div>') + '</div>';
   };
@@ -299,6 +306,7 @@
   let servings = {};
   views.recipe = (id) => {
     const r = RBY[id]; if (!r) return views.home();
+    if (proLocked(r)) return views.premium('recipe');
     const n = nut(r); const hits = allergyHits(r); const dis = dislikeHits(r); const fav = S.saved.includes(r.id);
     const sv = servings[id] || P().people || r.serves; const scale = sv / r.serves;
     const t = targets();
@@ -425,8 +433,10 @@
   const CAN_LIVE_CAMERA = !window.HP_EMBED;
   let scan = { img: null, loading: false, result: null, error: null, configError: false, mult: 1, demo: false };
   let cam = { state: 'idle', stream: null, msg: '', facing: 'environment', blocked: false }; // idle|starting|live|denied|none|unsupported|error
-  function scansLeft() { if (S.premium) return Infinity; if (S.scans.date !== todayKey()) return FREE_SCANS_PER_DAY; return Math.max(0, FREE_SCANS_PER_DAY - S.scans.count); }
-  const scannerReady = () => !!(S.scanUrl || S.apiKey);
+  function weekKey() { const d = new Date(); d.setDate(d.getDate() - todayIdx()); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
+  function scansLeft() { if (isPro()) return Infinity; if (!S.scans || S.scans.week !== weekKey()) return FREE_SCANS_PER_WEEK; return Math.max(0, FREE_SCANS_PER_WEEK - S.scans.count); }
+  const scanUrl = () => S.scanUrl || DEFAULT_SCAN_URL;
+  const scannerReady = () => !!(scanUrl() || S.apiKey);
   function stopCamera() {
     if (cam.stream) { try { cam.stream.getTracks().forEach(t => t.stop()); } catch (e) { /* already stopped */ } }
     cam.stream = null;
@@ -440,7 +450,7 @@
     return ['error', 'The camera couldn’t start' + (err && err.message ? ' (' + err.message + ')' : '') + '. You can upload a photo from your gallery instead.'];
   }
   async function startCamera() {
-    if (scansLeft() <= 0) { go('/premium'); toast('You’ve used today’s free scans'); return; }
+    if (scansLeft() <= 0) { go('/premium'); toast('You’ve used this week’s free scans. Go Pro for unlimited scans.'); return; }
     if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
       cam.state = 'unsupported'; cam.msg = 'The live camera isn’t supported on this phone. Use “Take photo” or “Upload from gallery”.'; render(); return;
     }
@@ -510,7 +520,7 @@
         (canLive ? '<button class="btn block" data-act="camStart">📷 Open camera</button>' : '') +
         (cam.state === 'unsupported' || !CAN_LIVE_CAMERA ? '<label class="btn block mt" for="photo-cam">📷 Take photo</label><input id="photo-cam" class="photo-input" type="file" accept="image/*" capture="environment" hidden>' : '') +
         '<label class="btn ghost block mt" for="photo">🖼️ Upload from gallery</label><input id="photo" class="photo-input" type="file" accept="image/*" hidden></div>' +
-        '<p class="small muted center mt">' + (left === Infinity ? '★ Premium: unlimited scans' : left + ' of ' + FREE_SCANS_PER_DAY + ' free scans left today') + '</p>' +
+        '<p class="small muted center mt">' + (left === Infinity ? '★ Pro: unlimited scans' : left + ' of ' + FREE_SCANS_PER_WEEK + ' free scans left this week · <a href="#/premium">Go Pro for unlimited</a>') + '</p>' +
         scannerSetupCard();
     }
     return topbar('Calorie Scanner', true) + '<div class="wrap">' + body +
@@ -560,8 +570,8 @@
   async function analyseImage(b64) {
     let res;
     try {
-      if (S.scanUrl) {
-        res = await fetch(S.scanUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ image: b64, media_type: 'image/jpeg' }) });
+      if (scanUrl()) {
+        res = await fetch(scanUrl(), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ image: b64, media_type: 'image/jpeg' }) });
       } else {
         res = await fetch(ANTHROPIC_URL, {
           method: 'POST',
@@ -573,7 +583,7 @@
     const j = await readJson(res);
     if (!res.ok) throw scanError(res.status, j);
     if (!j) throw new Error('The AI reply couldn’t be read. Please try again.');
-    if (S.scanUrl) return j.result || j;
+    if (scanUrl()) return j.result || j;
     return parseScanText((j.content || []).filter(b => b.type === 'text').map(b => b.text).join(''));
   }
   async function testScanner() {
@@ -583,8 +593,8 @@
     try {
       let res;
       try {
-        res = S.scanUrl
-          ? await fetch(S.scanUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ping: true }) })
+        res = scanUrl()
+          ? await fetch(scanUrl(), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ping: true }) })
           : await fetch(ANTHROPIC_URL, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': S.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify({ model: S.model || DEFAULT_MODEL, max_tokens: 5, messages: [{ role: 'user', content: 'Reply with OK' }] }) });
       } catch (e) { throw netError(e); }
       if (!res.ok) throw scanError(res.status, await readJson(res));
@@ -598,12 +608,12 @@
   }
   async function runScan() {
     if (!scan.img) return;
-    if (scansLeft() <= 0) { go('/premium'); toast('You’ve used today’s free scans'); return; }
+    if (scansLeft() <= 0) { go('/premium'); toast('You’ve used this week’s free scans. Go Pro for unlimited scans.'); return; }
     if (!scannerReady()) { scan.error = 'The AI scanner isn’t connected yet. Paste your scanner key below, then tap Try again.'; scan.configError = true; render(); return; }
     scan.loading = true; scan.error = null; scan.configError = false; scan.result = null; scan.demo = false; render();
     try {
       scan.result = await analyseImage(scan.img.split(',')[1]); scan.mult = 1;
-      if (S.scans.date !== todayKey()) S.scans = { date: todayKey(), count: 0 };
+      if (!S.scans || S.scans.week !== weekKey()) S.scans = { week: weekKey(), count: 0 };
       S.scans.count++; S.scanTest = { ok: true, at: Date.now() }; save();
     } catch (e) {
       scan.error = (e && e.message) || 'Something went wrong. Please try again.';
@@ -634,26 +644,98 @@
       row('Cooking', (p.cookTime ? (p.cookTime >= 60 ? '1 hour+' : p.cookTime + ' min') : '') + ' · ' + (p.people || 1) + ' ' + ((p.people || 1) > 1 ? 'people' : 'person') + (p.budget ? ' · R' + p.budget + '/week' : ''), 5) +
       row('Stores', esc((p.stores || []).map(s => (STORES.find(x => x.id === s) || {}).n).filter(Boolean).join(', ')), 5) + '</div>' +
       '<div class="card"><h3>Your daily estimate</h3><h2>≈ ' + t.kcal.toLocaleString('en-ZA') + ' kcal' + (t.protein ? ' · ' + t.protein + ' g protein' : '') + '</h2><p class="small muted">' + esc(t.explain) + '</p>' + (t.timeline ? '<p class="small muted">' + esc(t.timeline) + '</p>' : '') + '</div>' +
-      '<a class="card" href="#/premium" style="display:block;text-decoration:none;color:inherit;background:linear-gradient(135deg,#15243F,#2A4A7A);color:#fff"><h3 style="color:#fff">' + (S.premium ? '★ Premium active' : '★ Go Premium') + '</h3><p style="margin:0;color:#DCE3EE">' + (S.premium ? 'Thanks for supporting HealthyPlate. Manage your subscription.' : 'Unlimited photo scans, auto meal plans and more.') + '</p></a>' +
-      '<div class="card" id="photo-scanner"><h3>📷 Photo scanner</h3><p class="small muted">Food photos are analysed by an AI vision service (Claude by Anthropic). For testing, paste your API key from console.anthropic.com. It is stored only on this phone.</p>' +
+      '<a class="card pro-card" href="#/premium"><h3>' + (isPro() ? '★ HealthyPlate Pro is active' : '★ Go Pro') + '</h3><p>' + (isPro() ? (S.pro.active ? 'Thanks for supporting HealthyPlate. Manage your subscription.' : 'Pro is switched on for testing.') : 'Unlimited photo scans, Meal Prep recipes, auto meal plans and more. From ' + PRO_PRICES.monthly + '/month.') + '</p></a>' +
+      (TEST_BUILD ? testSwitchHtml() : '') +
+      (TEST_BUILD || !DEFAULT_SCAN_URL ? '<div class="card" id="photo-scanner"><h3>📷 Photo scanner</h3><p class="small muted">Food photos are analysed by an AI vision service (Claude by Anthropic). For testing, paste your API key from console.anthropic.com. It is stored only on this phone.</p>' +
       '<p class="small"><b>Status:</b> ' + (!scannerReady() ? '⚪ Not connected' : (S.scanTest || {}).ok === true ? '✅ Connected' : (S.scanTest || {}).ok === false ? '⚠️ ' + esc(S.scanTest.msg) : '🟡 Not tested yet') + '</p>' +
       '<label class="f" for="set-key">Scanner key</label><input class="in" id="set-key" type="password" data-setting="apiKey" value="' + esc(S.apiKey) + '" placeholder="sk-ant-…" autocomplete="off">' +
       '<label class="f" for="set-model">AI model</label><input class="in" id="set-model" data-setting="model" value="' + esc(S.model || DEFAULT_MODEL) + '" placeholder="' + DEFAULT_MODEL + '">' +
       '<label class="f" for="set-url">Fusion Labs scan server (optional)</label><input class="in" id="set-url" type="url" data-setting="scanUrl" value="' + esc(S.scanUrl || '') + '" placeholder="https://…workers.dev" autocomplete="off">' +
       '<p class="small muted">Before a public launch, use a scan server so the key isn’t stored in the app. When a server is set, it’s used instead of the key.</p>' +
-      '<button class="btn soft block" data-act="testScanner">Test connection</button></div>' +
+      '<button class="btn soft block" data-act="testScanner">Test connection</button></div>' : '') +
       '<div class="card"><h3>Data</h3><p class="small muted">Everything is stored privately on this phone.</p><button class="btn danger block" data-act="reset">Reset app & delete my data</button></div>' +
-      '<p class="disclaimer center">' + APP_NAME + ' v1.1 · by Fusion Labs<br>Nutrition values and calorie targets are estimates for general guidance and are not medical advice.</p></div>';
+      '<p class="disclaimer center">' + APP_NAME + ' v' + APP_VERSION + (TEST_BUILD ? ' (test build)' : '') + ' · by Fusion Labs<br>Nutrition values and calorie targets are estimates for general guidance and are not medical advice.</p></div>';
   };
 
-  let premPlan = 'year';
-  views.premium = () => topbar('HealthyPlate Premium', true) + '<div class="wrap">' +
-    '<div class="card center" style="background:linear-gradient(135deg,#15243F,#2A4A7A);color:#fff"><img class="logo-sm" style="width:64px;height:64px;border-radius:16px" src="icon.png" alt=""><h1 class="mt" style="color:#fff">Eat well, effortlessly</h1><p style="color:#DCE3EE">Everything you need to reach your goal.</p></div>' +
-    '<div class="card"><ul class="checklist"><li>Unlimited photo calorie scans</li><li>Auto-fill your weekly meal plan</li><li>Shopping lists with budget tracking</li><li>New South African recipes every month</li><li>Priority support from Fusion Labs</li></ul></div>' +
-    (S.premium ? '<div class="alert ok"><b>★ Premium is active</b> (test mode).</div><button class="btn ghost block" data-act="premiumOff">Turn off test premium</button>' :
-      '<button class="plan-opt ' + (premPlan === 'year' ? 'on' : '') + '" data-act="premPlan" data-val="year"><span class="spacer"><b>Yearly</b> <span class="pill">Save 32%</span><br><span class="small muted">R399 per year (≈ R33/month)</span></span><span class="price-big">R399</span></button>' +
-      '<button class="plan-opt ' + (premPlan === 'month' ? 'on' : '') + '" data-act="premPlan" data-val="month"><span class="spacer"><b>Monthly</b><br><span class="small muted">Cancel anytime</span></span><span class="price-big">R49</span></button>' +
-      '<button class="btn block" data-act="premiumOn">Start 7-day free trial</button><p class="small muted center mt">Test version: no payment is taken. Google Play billing will be connected before launch.</p>') + '</div>';
+  // ───────── HealthyPlate Pro (Google Play subscriptions) ─────────
+  const HPN = window.HPNative || null;
+  const TEST_BUILD = !!window.HP_EMBED || !!(HPN && HPN.isTestBuild && HPN.isTestBuild());
+  const HAS_BILLING = !!(HPN && HPN.billingBuy);
+  const APP_VERSION = (HPN && HPN.appVersion && HPN.appVersion()) || '1.2';
+  function isPro() { return !!((S.pro && S.pro.active) || (TEST_BUILD && S.proTest)); }
+  function proLocked(r) { return r.cat === 'prep' && !isPro(); }
+  let BILL = { status: HAS_BILLING ? 'loading' : 'none', plans: [], error: '', busy: false };
+  let premPlan = 'yearly';
+  let restoreRequested = false;
+  function periodText(p) { return { P1W: 'week', P1M: 'month', P3M: '3 months', P6M: '6 months', P1Y: 'year' }[p] || p; }
+  function trialText(p) { const m = /^P(\d+)([DWM])$/.exec(p || ''); if (!m) return ''; const n = +m[1] * (m[2] === 'W' ? 7 : 1); return m[2] === 'M' ? m[1] + '-month' : n + '-day'; }
+  // Turns Google's plan list into { monthly: {price, trial}, yearly: {...} }
+  function planInfo() {
+    const out = {};
+    (BILL.plans || []).forEach(pl => {
+      const phases = pl.phases || []; const last = phases[phases.length - 1]; if (!last) return;
+      const free = phases.find(ph => ph.micros === 0);
+      const cur = out[pl.basePlanId] || {};
+      if (!cur.price || free) out[pl.basePlanId] = { price: last.price, period: periodText(last.period), micros: last.micros, trial: free ? trialText(free.period) : (cur.trial || '') };
+    });
+    return out;
+  }
+  window.HPBilling = raw => {
+    let e; try { e = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (x) { return; }
+    if (e.type === 'plans') { BILL.status = 'ready'; BILL.plans = e.plans || []; BILL.error = ''; }
+    else if (e.type === 'not_listed') { BILL.status = 'not_listed'; BILL.busy = false; }
+    else if (e.type === 'cancelled') { BILL.busy = false; toast('Purchase cancelled'); }
+    else if (e.type === 'error') { BILL.busy = false; BILL.error = e.message; if (e.where === 'unavailable') BILL.status = 'unavailable'; toast(e.message); }
+    else if (e.type === 'entitlement') {
+      e.restoreRequested = restoreRequested; restoreRequested = false;
+      const was = isPro(); BILL.busy = false;
+      S.pro = { active: !!e.active, autoRenewing: !!e.autoRenewing, checkedAt: Date.now() }; save();
+      if (e.pending) toast('Your payment is pending. Pro will switch on once Google confirms it.');
+      else if (e.active && !was) toast('Welcome to HealthyPlate Pro ★');
+      else if (e.restore && e.restoreRequested) toast(e.active ? 'Pro restored ★' : 'No active subscription found');
+    }
+    const r = curRoute();
+    if (r.startsWith('/premium') || r.startsWith('/profile') || r.startsWith('/home')) render();
+  };
+  function testSwitchHtml() {
+    return '<div class="card test-card"><div class="row"><div class="spacer"><b>🧪 Turn on Pro for testing</b><br><span class="small muted">Only in test builds. Unlocks every Pro feature without paying. Play Store customers don’t see this.</span></div>' +
+      '<button class="switch ' + (S.proTest ? 'on' : '') + '" role="switch" aria-checked="' + (S.proTest ? 'true' : 'false') + '" aria-label="Pro for testing" data-act="toggleProTest"><span></span></button></div></div>';
+  }
+  views.premium = (from) => {
+    const info = planInfo();
+    const m = info.monthly || { price: PRO_PRICES.monthly, period: 'month' };
+    const y = info.yearly || { price: PRO_PRICES.yearly, period: 'year', trial: PRO_PRICES.trialDays + '-day' };
+    const sel = premPlan === 'monthly' ? m : y;
+    const saving = (info.monthly && info.yearly && info.monthly.micros) ? Math.round((1 - info.yearly.micros / (info.monthly.micros * 12)) * 100) : 33;
+    const perMonth = info.yearly && info.yearly.micros ? 'R' + (info.yearly.micros / 12e6).toFixed(2) : PRO_PRICES.yearlyPerMonth;
+    let action;
+    if (S.pro && S.pro.active) {
+      action = '<div class="alert ok"><b>★ HealthyPlate Pro is active.</b> Thank you for your support!</div>' +
+        '<a class="btn ghost block" href="https://play.google.com/store/account/subscriptions?sku=healthyplate_pro&package=za.co.fusionlabs.healthyplate">Manage or cancel subscription</a>';
+    } else if (HAS_BILLING && BILL.status === 'ready') {
+      action = '<button class="btn block" data-act="buyPro"' + (BILL.busy ? ' disabled' : '') + '>' + (sel.trial ? 'Start ' + sel.trial + ' free trial' : 'Subscribe for ' + sel.price + '/' + sel.period) + '</button>' +
+        '<p class="small muted center mt">' + (sel.trial ? 'Free for ' + sel.trial.replace('-', ' ') + 's, then ' : '') + sel.price + ' per ' + sel.period + '. Cancel anytime in Google Play.</p>';
+    } else if (HAS_BILLING && BILL.status === 'loading') {
+      action = '<div class="center"><div class="spinner"></div><p class="small muted">Loading prices from Google Play…</p></div>';
+    } else {
+      action = '<div class="alert info"><b>Payments open when HealthyPlate is on Google Play.</b><br>' +
+        (BILL.status === 'unavailable' ? 'Google Play billing isn’t available on this phone. ' : '') +
+        (TEST_BUILD ? 'This is a test version, so use the switch below to try every Pro feature for free.' : 'Please install HealthyPlate from the Google Play Store to subscribe.') + '</div>';
+    }
+    return topbar('HealthyPlate Pro', true) + '<div class="wrap">' +
+      (from === 'recipe' ? '<div class="alert info">🔒 This Meal Prep recipe is part of HealthyPlate Pro.</div>' : '') +
+      '<div class="card center pro-hero"><img class="logo-sm" src="icon.png" alt=""><h1 class="mt">Eat well, effortlessly</h1><p>Everything you need to reach your goal.</p></div>' +
+      '<div class="card"><table class="compare"><thead><tr><th></th><th>Free</th><th>Pro</th></tr></thead><tbody>' +
+      [['Recipes, calories & rand prices', '✓', '✓'], ['Meal plan, shopping list & notes', '✓', '✓'], ['Photo calorie scans', '3 a week', 'Unlimited'], ['Meal Prep recipe collection', '–', '✓'], ['Auto-fill your weekly meal plan', '–', '✓'], ['Shopping list built from your plan, with budget', '–', '✓']]
+        .map(rw => '<tr><td>' + rw[0] + '</td><td>' + rw[1] + '</td><td><b>' + rw[2] + '</b></td></tr>').join('') + '</tbody></table></div>' +
+      (S.pro && S.pro.active ? '' :
+        '<button class="plan-opt ' + (premPlan === 'yearly' ? 'on' : '') + '" data-act="premPlan" data-val="yearly"><span class="spacer"><b>Yearly</b> <span class="pill">Save ' + saving + '%</span><br><span class="small muted">' + y.price + ' a year · ' + perMonth + ' a month' + (y.trial ? ' · ' + y.trial + ' free trial' : '') + '</span></span><span class="price-big">' + y.price + '</span></button>' +
+        '<button class="plan-opt ' + (premPlan === 'monthly' ? 'on' : '') + '" data-act="premPlan" data-val="monthly"><span class="spacer"><b>Monthly</b><br><span class="small muted">Cancel anytime</span></span><span class="price-big">' + m.price + '</span></button>') +
+      action +
+      (HAS_BILLING ? '<button class="linkbtn block center mt" data-act="restorePro">Restore purchases</button>' : '') +
+      (TEST_BUILD ? testSwitchHtml() : '') +
+      '<p class="disclaimer">Payment is charged to your Google Play account. The subscription renews automatically unless cancelled at least 24 hours before the end of the current period. Manage or cancel anytime in Google Play → Payments & subscriptions.</p></div>';
+  };
 
   // ───────── Sheets ─────────
   function sheet(html) { const w = $('#sheet'); w.innerHTML = '<div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>' + html + '</div>'; w.hidden = false; }
@@ -706,7 +788,7 @@
   async function onPhoto(e) {
     const f = e.target.files && e.target.files[0]; if (!f) return;
     e.target.value = '';
-    if (scansLeft() <= 0) { go('/premium'); toast('You’ve used today’s free scans'); return; }
+    if (scansLeft() <= 0) { go('/premium'); toast('You’ve used this week’s free scans. Go Pro for unlimited scans.'); return; }
     try { scan = { img: await resizeImage(f), loading: false, result: null, error: null, configError: false, mult: 1, demo: false }; render(); runScan(); }
     catch (err) { toast(err.message); }
   }
@@ -753,7 +835,7 @@
     clearSlot(el) { const d = S.plan[+el.dataset.day]; if (d) delete d[el.dataset.slot]; save(); render(); },
     clearPlan() { askConfirm('Clear all meals from this week’s plan?', 'Clear week', () => { S.plan = {}; save(); render(); }); },
     autoPlan() {
-      if (!S.premium) { go('/premium'); toast('Auto-fill is a Premium feature'); return; }
+      if (!isPro()) { go('/premium'); toast('Auto-fill is a Pro feature'); return; }
       const week = String(Date.now()); const used = { breakfast: [], lunch: [], supper: [] };
       for (let d = 0; d < 7; d++) {
         S.plan[d] = S.plan[d] || {};
@@ -767,6 +849,7 @@
       save(); render(); toast('Week planned around your goal ✨');
     },
     planToList() {
+      if (!isPro()) { go('/premium'); toast('Building your list from the plan is a Pro feature'); return; }
       const people = P().people || 1; const map = {};
       Object.values(S.plan).forEach(day => Object.values(day || {}).forEach(id => { const r = RBY[id]; if (!r) return; r.ing.forEach(([iid, g]) => { map[iid] = (map[iid] || 0) + g * people / r.serves; }); }));
       if (!Object.keys(map).length) { toast('Add meals to your plan first'); return; }
@@ -814,8 +897,9 @@
     delNote(el) { const id = el.dataset.id; askConfirm('Delete this note?', 'Delete', () => { S.notes = S.notes.filter(n => n.id !== id); save(); go('/notes'); }); },
     quickSearch(el) { const i = $('#sq'); i.value = el.dataset.val; $('#results').innerHTML = searchResults(i.value); replaceRoute('/search?q=' + encodeURIComponent(i.value)); },
     premPlan(el) { premPlan = el.dataset.val; render(); },
-    premiumOn() { S.premium = true; save(); render(); toast('Premium activated (test mode) ★'); },
-    premiumOff() { S.premium = false; save(); render(); },
+    buyPro() { if (!HAS_BILLING) return; BILL.busy = true; render(); HPN.billingBuy(premPlan); setTimeout(() => { if (BILL.busy) { BILL.busy = false; render(); } }, 15000); },
+    restorePro() { if (!HAS_BILLING) return; restoreRequested = true; toast('Checking Google Play…'); HPN.billingRestore(); },
+    toggleProTest() { S.proTest = !S.proTest; save(); render(); toast(S.proTest ? 'Pro switched on for testing ★' : 'Pro testing switched off'); },
     reset() { askConfirm('Delete all your HealthyPlate data from this phone? This cannot be undone.', 'Delete everything', () => { try { localStorage.removeItem(STORE_KEY); } catch (e) { /* storage unavailable */ } S = defaults(); STACK.length = 0; go('/welcome'); }); },
   };
 
@@ -845,5 +929,9 @@
     }
   });
   if (USE_HASH) window.addEventListener('hashchange', () => { closeSheet(); render(); });
+  if (!S.pro) S.pro = { active: false };
+  if (S.scans && S.scans.date !== undefined) S.scans = { week: '', count: 0 };
+  delete S.premium;
+  if (HAS_BILLING) { try { HPN.billingRefresh(); } catch (e) { BILL.status = 'unavailable'; } }
   render();
 })();

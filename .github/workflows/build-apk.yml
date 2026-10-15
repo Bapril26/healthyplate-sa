@@ -21,24 +21,38 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
+          gradle-version: '8.13'
 
-      - name: Build APK
-        run: gradle --no-daemon assembleRelease
+      # Test APK for your phone: includes the "Turn on Pro for testing" switch
+      - name: Build test APK
+        run: gradle --no-daemon assembleRelease -PtestUnlock=true
 
       - name: Rename APK
         run: cp app/build/outputs/apk/release/app-release.apk HealthyPlateSA.apk
 
-      - name: Upload APK (Actions tab)
+      # Play Store bundle: real Google Play payments only, no test switch
+      - name: Build Play Store bundle (AAB)
+        run: gradle --no-daemon bundleRelease -PtestUnlock=false
+
+      - name: Rename AAB
+        run: cp app/build/outputs/bundle/release/app-release.aab HealthyPlateSA-PlayStore.aab
+
+      - name: Upload files (Actions tab)
         uses: actions/upload-artifact@v4
         with:
-          name: HealthyPlateSA-APK
-          path: HealthyPlateSA.apk
+          name: HealthyPlateSA-builds
+          path: |
+            HealthyPlateSA.apk
+            HealthyPlateSA-PlayStore.aab
 
-      - name: Publish APK as a download (Releases page)
+      - name: Publish downloads (Releases page)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: HealthyPlate SA v1.1 test build ${{ github.run_number }}
-          body: Install HealthyPlateSA.apk on your Android phone. You may need to allow "Install unknown apps" for your browser.
-          files: HealthyPlateSA.apk
+          name: HealthyPlate SA v1.2 build ${{ github.run_number }}
+          body: |
+            **HealthyPlateSA.apk** - install on your Android phone for testing (includes "Turn on Pro for testing" in Profile).
+            **HealthyPlateSA-PlayStore.aab** - upload this to Google Play Console (real payments only).
+          files: |
+            HealthyPlateSA.apk
+            HealthyPlateSA-PlayStore.aab

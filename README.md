@@ -34,6 +34,21 @@ Alternative: open the folder in **Android Studio** and choose Build → Build AP
 
 **Before a public launch,** deploy `server/scan-worker.js` (a free Cloudflare Worker, with steps in the file) so the key lives on a server, not in the app. Then paste the worker URL into **Fusion Labs scan server**.
 
+## HealthyPlate Pro (subscriptions)
+**Free:** recipes, calories, rand prices, meal plan, shopping list, notes, 3 photo scans a week.
+**Pro:** unlimited photo scans, Meal Prep collection, auto-fill weekly plan, shopping list built from the plan with budget.
+
+**Prices:** R49.99/month, or R399.99/year (about R33/month) with a 7-day free trial.
+
+**Testing:** the test APK has **Profile → Turn on Pro for testing**. The Play Store bundle (`HealthyPlateSA-PlayStore.aab`) doesn't have this switch; customers pay through Google Play.
+
+**Google Play Console setup** (Monetise → Products → Subscriptions):
+1. Create subscription **Product ID `healthyplate_pro`**, named "HealthyPlate Pro".
+2. Add base plan **`monthly`**: auto-renewing, 1 month, R49.99.
+3. Add base plan **`yearly`**: auto-renewing, 1 year, R399.99.
+4. On `yearly`, add offer **`free-trial`**: free phase 7 days, eligibility "New customer acquisition".
+5. Activate the base plans and the offer. Under Settings → License testing, add your Gmail so you can test purchases without being charged.
+
 ## Updating the app
 Test builds are signed with a fixed test key (`app/healthyplate-test.jks`), so each new APK installs over the previous one and keeps your data. For Google Play, create a separate private upload key and don't commit it.
 
