@@ -25,14 +25,24 @@ jobs:
 
       # Test APK for your phone: includes the "Turn on Pro for testing" switch
       - name: Build test APK
-        run: gradle --no-daemon assembleRelease -PtestUnlock=true
+        run: |
+          set -o pipefail
+          gradle --no-daemon assembleRelease -PtestUnlock=true 2>&1 | tee build.log
+
+      # If the build fails, post the error as annotations so it can be read without the full log
+      - name: Report build errors
+        if: failure()
+        run: |
+          grep -E "error:|e: |What went wrong|> |Could not|requires|incompatible|FAILED" build.log | grep -v "^> Task" | head -25 | while IFS= read -r line; do echo "::error::${line//%/%25}"; done
 
       - name: Rename APK
         run: cp app/build/outputs/apk/release/app-release.apk HealthyPlateSA.apk
 
       # Play Store bundle: real Google Play payments only, no test switch
       - name: Build Play Store bundle (AAB)
-        run: gradle --no-daemon bundleRelease -PtestUnlock=false
+        run: |
+          set -o pipefail
+          gradle --no-daemon bundleRelease -PtestUnlock=false 2>&1 | tee build.log
 
       - name: Rename AAB
         run: cp app/build/outputs/bundle/release/app-release.aab HealthyPlateSA-PlayStore.aab
